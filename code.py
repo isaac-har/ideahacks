@@ -1,22 +1,7 @@
 # code.py - CONTROLLER (MVC pattern)
 #
-# The Controller is the entry point.  It owns ALL hardware objects,
+# The Controller is the entry point. It owns ALL hardware objects,
 # initialises them, and drives the main game loop.
-#
-# Responsibilities:
-#   - Hardware initialisation (display, IMU, NeoPixels, touch pad, button)
-#   - IMU calibration and input normalisation into [-1.0, 1.0]
-#   - Jump buffering so fast taps are not missed during draw() or sleep()
-#   - Creating MarioModel and MarioView and wiring them together
-#   - Main game loop:
-#       1. Poll jump button immediately (catches presses during slow frames)
-#       2. Read all inputs -> fill InputState
-#       3. model.update(input_state) -> list of event strings
-#       4. Route each event to the appropriate view method
-#       5. view.draw(model) to reposition sprites
-#       6. view.update_neopixels(model) for LED feedback
-#       7. Periodic GC and debug print
-#       8. Game-over hold screen (5 s, then reset and continue)
 
 import sys
 sys.path.append("/API")
@@ -35,8 +20,7 @@ from adafruit_st7789 import ST7789
 import terminalio
 from adafruit_display_text import label as _label
 
-from mario_model import MarioModel, InputState
-from mario_view  import MarioView
+from bme680 import BME680Sensor
 
 # ---------------------------------------------------------------------------
 # Controller configuration
@@ -51,12 +35,7 @@ Debug               = True  # print frame stats to the serial console
 # Display setup
 # ---------------------------------------------------------------------------
 def _setup_display():
-    """Initialise the ST7789 LCD and return the display object.
-
-    The backlight is kept off during init to prevent a white flash.
-    Display rotation is 90 degrees (landscape), matching the physical
-    orientation of the board.
-    """
+    """Initialise the ST7789 LCD and return the display object."""
     backlight           = digitalio.DigitalInOut(microcontroller.pin.PA06)
     backlight.direction = digitalio.Direction.OUTPUT
     backlight.value     = False   # off during init
@@ -79,36 +58,20 @@ def _setup_display():
 # IMUController
 # ---------------------------------------------------------------------------
 class IMUController:
-    """Read the ICM20948 IMU and D3 jump button each tick.
-
-    Hardware used (all owned by the Controller, not the Model):
-      board.I2C()  -- I2C bus for the IMU
-      board.D3     -- jump button (active-LOW, internal pull-up)
-      board.CAP1   -- capacitive touch pad for "run"
-
-    Calibration
-    -----------
-    On startup, CALIBRATION_SAMPLES accelerometer readings are averaged to
-    find the static bias on the X axis.  This offset is subtracted from
-    every subsequent reading so the board can be held at any angle and
-    still give a stable zero point.
-
-    Jump buffering
-    --------------
-    A button press is held in a 3-frame buffer so quick taps are not
-    missed during a slow draw() or sleep() call.  poll_button() should
-    be called at the very start of each frame before any other work.
-    """
-
-    def __init__(self):
+    # Notice we added 'i2c' as a parameter here!
+    def __init__(self, i2c):
         print("Initialising IMU...")
-        i2c = board.I2C()
+        
+        # We try to connect using the shared i2c bus passed from main()
         try:
             self._icm = adafruit_icm20x.ICM20948(i2c, 0x69)
             print("IMU at 0x69")
         except Exception:
-            self._icm = adafruit_icm20x.ICM20948(i2c, 0x68)
-            print("IMU at 0x68")
+            try:
+                self._icm = adafruit_icm20x.ICM20948(i2c, 0x68)
+                print("IMU at 0x68")
+            except Exception as e:
+                print(f"Failed to find IMU: {e}")
 
         self._offset_x = 0.0   # bias offset set by calibrate()
 
@@ -127,62 +90,42 @@ class IMUController:
         except Exception:
             self._has_touch = False
 
-        # Debounce for run: touchio.TouchIn.value emits brief False glitches
-        # while the pad is genuinely held.  Latch True immediately on press;
-        # only release after _RUN_RELEASE_FRAMES consecutive False readings.
-        self._run_stable    = False   # debounced run state passed to InputState
-        self._run_off_count = 0       # consecutive frames of raw False
+        self._run_stable    = False
+        self._run_off_count = 0
 
-        # Re-used each tick to avoid allocation
         self._state = InputState()
-
         self.calibrate()
 
     def calibrate(self):
-        """Average CALIBRATION_SAMPLES IMU readings to find the resting bias."""
         print("Calibrating IMU -- place board on a level surface...")
         time.sleep(1)
         total = 0.0
         for _ in range(CALIBRATION_SAMPLES):
-            x, _, _ = self._icm.acceleration
-            total  += x
+            if hasattr(self, '_icm'):
+                x, _, _ = self._icm.acceleration
+                total  += x
             time.sleep(0.05)
         self._offset_x = total / CALIBRATION_SAMPLES
         print(f"Calibration done. X offset = {self._offset_x:.2f} g")
 
     def poll_button(self):
-        """Quick poll of the jump button only.
-
-        Call this at the very start of every frame (before draw() and
-        sleep()) so that fast taps during those calls are buffered and
-        not lost.
-        """
-        current = not self._btn.value   # active-LOW: True when pressed
+        current = not self._btn.value
         if current and not self._prev_btn:
-            self._buf_frames = 3        # keep buffered for 3 frames (~100 ms)
+            self._buf_frames = 3
         self._prev_btn = current
-    
-    #I think this is more game code, might need to cut it
+
     def read(self) -> InputState:
-        """Read all inputs and return a filled InputState for this tick.
+        if hasattr(self, '_icm'):
+            ax, _, _ = self._icm.acceleration
+            adj      = ax - self._offset_x
 
-        Also polls the button again (redundant but harmless) to catch
-        any press that happened since the last poll_button() call.
-        """
-        # Tilt -- horizontal X axis of the accelerometer
-        ax, _, _ = self._icm.acceleration
-        adj       = ax - self._offset_x
+            if abs(adj) < TILT_DEADZONE:
+                self._state.tilt_value = 0.0
+            elif adj > 0:
+                self._state.tilt_value = min(1.0, (adj - TILT_DEADZONE) / TILT_MAX)
+            else:
+                self._state.tilt_value = max(-1.0, (adj + TILT_DEADZONE) / TILT_MAX)
 
-        if abs(adj) < TILT_DEADZONE:
-            self._state.tilt_value = 0.0
-        elif adj > 0:
-            # Moving right: normalise to [0.0, 1.0] after removing deadzone
-            self._state.tilt_value = min(1.0, (adj - TILT_DEADZONE) / TILT_MAX)
-        else:
-            # Moving left: normalise to [-1.0, 0.0]
-            self._state.tilt_value = max(-1.0, (adj + TILT_DEADZONE) / TILT_MAX)
-
-        # Jump button (poll again + consume buffer)
         current = not self._btn.value
         if current and not self._prev_btn:
             self._buf_frames = 3
@@ -194,10 +137,6 @@ class IMUController:
         else:
             self._state.jump  = False
 
-        # Run (capacitive touch) -- debounced to suppress brief False glitches.
-        # Latch True as soon as the pad is touched; only clear after
-        # _RUN_RELEASE_FRAMES (3) consecutive False readings so that
-        # single-frame noise doesn't flash the amber NeoPixel off.
         raw_run = self._touch.value if self._has_touch else False
         if raw_run:
             self._run_stable    = True
@@ -215,25 +154,13 @@ class IMUController:
 # Startup LCD helper
 # ---------------------------------------------------------------------------
 def _show_startup_text(display, lines):
-    """Render centred white text on a black screen.
-
-    Used for pre/post-calibration messages before MarioView takes over
-    the display.  Each entry in *lines* is drawn on its own row at scale 2
-    (12 px wide x 16 px tall per character); keep each line under 20 chars.
-
-    Parameters
-    ----------
-    display : ST7789 display object
-    lines   : list of str
-    """
     grp    = displayio.Group()
     bg_bmp = displayio.Bitmap(240, 135, 1)
     bg_pal = displayio.Palette(1)
-    bg_pal[0] = 0x000000            # black background
+    bg_pal[0] = 0x000000
     grp.append(displayio.TileGrid(bg_bmp, pixel_shader=bg_pal))
 
-    # Space rows evenly across the 135-px height
-    row_h   = 22                    # pixels between baselines at scale 2
+    row_h   = 22
     total_h = len(lines) * row_h
     start_y = (135 - total_h) // 2 + row_h // 2
 
@@ -258,35 +185,38 @@ def main():
     gc.collect()
     print(f"Free RAM at start: {gc.mem_free()} bytes")
 
-    # -- Hardware initialisation ---------------------------------------------
+    # -- Hardware initialisation --
     display = _setup_display()
-    px      = neopixel.NeoPixel(board.NEOPIXEL, 5, brightness=0.15,
-                                auto_write=False)
+    px      = neopixel.NeoPixel(board.NEOPIXEL, 5, brightness=0.15, auto_write=False)
     px.fill(0x000000)
     px.show()
 
-    # -- Pre-calibration LCD message -----------------------------------------
-    # Show before IMUController() so the user sees it during the ~2.5 s
-    # calibration window (1 s sleep + 30 samples * 50 ms each).
     _show_startup_text(display, [
         "Place Ruler flat.",
         "IMU Calibration",
         "starting...",
     ])
+    
+    # 1. INITIALIZE THE I2C BUS 
+    # board.I2C() automatically uses the STEMMA QT / Qwiic pins on Adafruit boards
+    i2c = board.I2C() 
+    
+    # 2. PASS THE BUS TO THE IMU
+    imu = IMUController(i2c)
 
-    # -- IMU (calibrates on construction) ------------------------------------
-    imu = IMUController()
-
-    # -- Post-calibration LCD message ----------------------------------------
     _show_startup_text(display, [
         "IMU Calibration",
         "Completed",
     ])
+    
+    # 3. PASS THE EXACT SAME BUS TO THE BME680
+    sensor = BME680Sensor(i2c) 
 
-    # -- Main game loop ------------------------------------------------------
+    # -- Main loop --
     while True:
-        # Originally mario game code was here
-
+        sensor.print_all()
+        
+        time.sleep(1.0) 
 
 if __name__ == "__main__":
     main()
