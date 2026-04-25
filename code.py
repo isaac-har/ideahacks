@@ -161,7 +161,8 @@ class IMUController:
         if current and not self._prev_btn:
             self._buf_frames = 3        # keep buffered for 3 frames (~100 ms)
         self._prev_btn = current
-
+    
+    #I think this is more game code, might need to cut it
     def read(self) -> InputState:
         """Read all inputs and return a filled InputState for this tick.
 
@@ -282,92 +283,9 @@ def main():
         "Completed",
     ])
 
-    # -- Remaining MVC objects -----------------------------------------------
-    # MarioView sets display.root_group, replacing the calibration screen.
-    model = MarioModel()
-    view  = MarioView(display, px)
-
-    print("\n" + "=" * 50)
-    print("SUPER MARIO BROS - IMU EDITION")
-    print("Tilt board to move | D3 = jump | CAP1 = run")
-    print("=" * 50 + "\n")
-
-    frame            = 0
-    gameover_holding = False   # True while showing the 5-second hold screen
-
     # -- Main game loop ------------------------------------------------------
     while True:
-        # Poll jump button at the very top of the frame to catch quick taps
-        # that may have occurred during the previous draw() or sleep().
-        imu.poll_button()
-
-        # Read all hardware inputs into a decoupled InputState
-        input_state = imu.read()
-
-        # Advance the model by one tick; collect any events that fired
-        events = model.update(input_state)
-
-        # Route events to the appropriate view methods
-        for event in events:
-            if event == "jumped":
-                view.play_sfx("jump")
-
-            elif event == "coin":
-                view.play_sfx("coin")
-
-            elif event == "stomp":
-                pass   # add view.play_sfx("stomp") when smb_stomp.wav is ready
-
-            elif event == "enemy_hit":
-                pass   # add view.play_sfx("death") when smb_death.wav is ready
-
-            elif event == "gameover":
-                view.play_sfx("gameover")
-                view.show_game_over()
-                view.flash_neopixels_gameover()
-                gameover_holding = False   # start the hold-screen countdown
-
-            elif event == "level_complete":
-                view.play_sfx("world_clear")
-                view.show_victory(model.score, model.coins)
-
-            elif event == "level_reset":
-                # Model already called reset(); sync the view
-                view.hide_overlays()
-
-        # Render the frame
-        view.draw(model)
-        view.update_neopixels(model, model.level_complete)
-
-        frame += 1
-
-        # Periodic GC every ~3 seconds at 30 FPS
-        if frame % 90 == 0:
-            gc.collect()
-            if Debug or frame % 180 == 0:
-                print(f"Score: {model.score} | Coins: {model.coins} | "
-                      f"Lives: {model.lives} | RAM: {gc.mem_free()}")
-
-        # Game-over hold screen -- display for 5 seconds, then auto-restart
-        if model.game_over and not gameover_holding:
-            gameover_holding = True
-            print(f"\nGAME OVER!  Final score: {model.score}")
-
-            for i in range(150):   # 150 frames * 33 ms = ~5 seconds
-                time.sleep(0.033)
-                if i % 30 == 0:    # print status every second
-                    if view.is_audio_playing():
-                        print(f"  gameover audio playing... ({i // 30 + 1}s)")
-                    else:
-                        print(f"  holding screen... ({i // 30 + 1}s)")
-
-            print("Restarting level...\n")
-            view.stop_audio()
-            model.reset()         # full game reset in the Model
-            view.hide_overlays()  # clear overlays and show HUD in the View
-            gameover_holding = False
-
-        time.sleep(0.033)   # ~30 FPS
+        # Originally mario game code was here
 
 
 if __name__ == "__main__":
