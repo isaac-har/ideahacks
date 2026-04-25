@@ -21,7 +21,7 @@ import terminalio
 from adafruit_display_text import label as _label
 
 from bme680 import BME680Sensor
-import qwiic_veml6030
+
 
 
 
@@ -219,26 +219,12 @@ def main():
     
     # 3. PASS BUS TO BME680 (Temp, Humidity, Gas, Pressure)
     sensor = BME680Sensor(i2c)
-    
-    # Create instance of device
-    light_sensor = qwiic_veml6030.QwiicVEML6030(i2c)
-
-    # Check if it's connected
-    if light_sensor.is_connected() == False:
-        print("The device isn't connected to the system. Please check your connection")
-        return
-
-    # Initialize the device
-    light_sensor.begin()
 
 
     # -- Main loop --
     while True:
         #Temp, Humidity, Gas, Pressure
         sensor.print_all()
-        
-        ambient_light = light_sensor.read_light()
-        print("Lux:\t%.1f" % ambient_light)
             
         time.sleep(1.0) 
 
