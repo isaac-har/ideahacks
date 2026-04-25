@@ -1,3 +1,0 @@
-Adafruit CircuitPython 10.1.0-alpha.0-2-g706c4b2abf on 2025-10-27; Microchip Curiosity CircuitPython with same51j20
-Board ID:microchip_curiosity_circuitpython
-UID:2E0D78CA5432505320202041221A10FF
